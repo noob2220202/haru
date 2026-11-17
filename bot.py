@@ -3,9 +3,11 @@
 - 채팅방의 오늘 채팅 개수를 셉니다.
 - 매일 자정(기본: 한국 시간)에 0으로 초기화됩니다.
 - /채팅 (또는 /chat) 으로 오늘의 채팅 개수를 확인합니다.
+- /랭킹 (또는 /rank) 으로 오늘의 채팅 순위를 확인합니다. (페이지당 10명)
 """
 
 import json
+import math
 import logging
 import os
 import random
@@ -13,10 +15,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -28,6 +32,8 @@ TZ = ZoneInfo(os.environ.get("BOT_TIMEZONE", "Asia/Seoul"))
 DATA_FILE = Path(os.environ.get("DATA_FILE", "counts.json"))
 
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
+PAGE_SIZE = 10
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO
@@ -51,7 +57,9 @@ def save_data(data: dict) -> None:
     tmp.replace(DATA_FILE)
 
 
-DATA = load_data()  # { "chat_id": {"date": "YYYY-MM-DD", "count": int} }
+# { "chat_id": {"date": "YYYY-MM-DD", "count": int,
+#                "users": {"user_id": {"name": str, "count": int}}} }
+DATA = load_data()
 
 
 def now() -> datetime:
@@ -64,8 +72,9 @@ def today_entry(chat_id: int) -> dict:
     today = now().date().isoformat()
     entry = DATA.get(key)
     if entry is None or entry.get("date") != today:
-        entry = {"date": today, "count": 0}
+        entry = {"date": today, "count": 0, "users": {}}
         DATA[key] = entry
+    entry.setdefault("users", {})
     return entry
 
 
@@ -129,6 +138,57 @@ def build_message(chat_title: str | None, count: int) -> str:
     )
 
 
+def build_ranking(chat_title: str | None, entry: dict, page: int):
+    """랭킹 메시지 텍스트와 페이지 버튼을 만듦. page 는 0부터 시작."""
+    ranking = sorted(
+        entry["users"].values(), key=lambda u: u["count"], reverse=True
+    )
+    total = entry["count"]
+    pages = max(1, math.ceil(len(ranking) / PAGE_SIZE))
+    page = min(max(page, 0), pages - 1)
+
+    n = now()
+    date_text = f"{n.month}월 {n.day}일 ({WEEKDAYS[n.weekday()]})"
+    title = f"🏠 <b>{escape(chat_title)}</b>\n" if chat_title else ""
+    head = f"🏆 <b>오늘의 채팅 랭킹</b>\n{title}📅 <i>{date_text}</i>\n\n"
+
+    if not ranking:
+        return head + "🦗 <i>아직 아무도 채팅하지 않았어요…\n첫 번째 주인공이 되어보세요!</i>", None
+
+    lines = []
+    start = page * PAGE_SIZE
+    prev_count, prev_rank = None, 0
+    for i, u in enumerate(ranking):
+        # 동점자는 같은 등수
+        rank = prev_rank if u["count"] == prev_count else i + 1
+        prev_count, prev_rank = u["count"], rank
+        if i < start:
+            continue
+        if i >= start + PAGE_SIZE:
+            break
+        icon = MEDALS.get(rank, f"<b>{rank}.</b>")
+        name = u["name"] if len(u["name"]) <= 20 else u["name"][:19] + "…"
+        pct = u["count"] / total * 100 if total else 0
+        lines.append(
+            f"{icon} {escape(name)} — <b>{u['count']:,}</b>개 <i>({pct:.0f}%)</i>"
+        )
+
+    text = (
+        head
+        + "<blockquote>" + "\n".join(lines) + "</blockquote>\n\n"
+        + f"💬 <i>총</i> <b>{total:,}</b>개 · 👥 <i>참여</i> <b>{len(ranking)}</b>명\n"
+        + f"📄 <i>{page + 1} / {pages} 페이지</i>"
+    )
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ 이전", callback_data=f"rank:{page - 1}"))
+    nav.append(InlineKeyboardButton("🔄 새로고침", callback_data=f"rank:{page}"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton("다음 ▶️", callback_data=f"rank:{page + 1}"))
+    return text, InlineKeyboardMarkup([nav])
+
+
 def escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -141,6 +201,9 @@ async def count_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     entry = today_entry(msg.chat_id)
     entry["count"] += 1
+    user = entry["users"].setdefault(str(msg.from_user.id), {"name": "", "count": 0})
+    user["name"] = msg.from_user.full_name
+    user["count"] += 1
     save_data(DATA)
 
 
@@ -148,10 +211,38 @@ async def show_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     msg = update.effective_message
     chat = update.effective_chat
     entry = today_entry(chat.id)
-    title = chat.title if chat.type != "private" else None
     await msg.reply_text(
-        build_message(title, entry["count"]), parse_mode=ParseMode.HTML
+        build_message(chat_title_of(chat), entry["count"]), parse_mode=ParseMode.HTML
     )
+
+
+def chat_title_of(chat) -> str | None:
+    return chat.title if chat.type != "private" else None
+
+
+async def show_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    text, markup = build_ranking(chat_title_of(chat), today_entry(chat.id), 0)
+    await update.effective_message.reply_text(
+        text, parse_mode=ParseMode.HTML, reply_markup=markup
+    )
+
+
+async def ranking_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    chat = update.effective_chat
+    page = int(query.data.split(":")[1])
+    text, markup = build_ranking(chat_title_of(chat), today_entry(chat.id), page)
+    try:
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML, reply_markup=markup
+        )
+        await query.answer()
+    except BadRequest as e:
+        if "not modified" in str(e).lower():
+            await query.answer("✨ 이미 최신 랭킹이에요!")
+        else:
+            raise
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -161,7 +252,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<blockquote>💬 이 방의 <b>오늘 채팅 개수</b>를 세고 있어요\n"
         "🌙 매일 <i>자정</i>에 0으로 초기화돼요</blockquote>\n"
         "\n"
-        "👉 <b>/채팅</b> 을 입력해서 확인해보세요!",
+        "👉 <b>/채팅</b> 오늘 채팅 개수 보기\n"
+        "🏆 <b>/랭킹</b> 오늘 채팅 순위 보기",
         parse_mode=ParseMode.HTML,
     )
 
@@ -175,11 +267,16 @@ def main() -> None:
     app = Application.builder().token(TOKEN).build()
 
     # /채팅 은 텔레그램 규격상 '명령어'로 인식되지 않으므로 정규식으로 받음
-    korean_cmd = filters.Regex(r"^/채팅(@\w+)?(\s|$)")
+    chat_cmd = filters.Regex(r"^/채팅(@\w+)?(\s|$)")
+    rank_cmd = filters.Regex(r"^/랭킹(@\w+)?(\s|$)")
+    korean_cmd = chat_cmd | rank_cmd
 
     app.add_handler(CommandHandler(["chat", "count"], show_count))
     app.add_handler(CommandHandler(["start", "help"], start))
-    app.add_handler(MessageHandler(korean_cmd, show_count))
+    app.add_handler(CommandHandler(["rank", "ranking"], show_ranking))
+    app.add_handler(MessageHandler(chat_cmd, show_count))
+    app.add_handler(MessageHandler(rank_cmd, show_ranking))
+    app.add_handler(CallbackQueryHandler(ranking_page, pattern=r"^rank:\d+$"))
 
     # 명령어를 제외한 모든 새 메시지(텍스트·사진·스티커·영상 등)를 카운트
     app.add_handler(
