@@ -2,7 +2,7 @@
 💬 하루 채팅 카운터 봇
 - 채팅방의 오늘 채팅 개수를 셉니다.
 - 매일 자정(기본: 한국 시간)에 0으로 초기화됩니다.
-- /채팅 (또는 /chat) 으로 오늘의 채팅 개수를 확인합니다.
+- /채팅 (또는 /chat) 으로 내 오늘 채팅 개수와 순위를 확인합니다.
 - /랭킹 (또는 /rank) 으로 오늘의 채팅 순위를 확인합니다. (페이지당 10명)
 """
 
@@ -83,32 +83,32 @@ def today_entry(chat_id: int) -> dict:
 def mood(count: int) -> str:
     if count == 0:
         return random.choice([
-            "🦗 <i>귀뚤귀뚤… 아직 아무도 말이 없어요</i>",
-            "😴 <i>조용한 하루의 시작이에요</i>",
+            "🫥 <i>오늘은 아직 눈팅 중이시네요…</i>",
+            "🤐 <i>침묵은 금이라지만, 한마디 해보세요!</i>",
         ])
-    if count < 50:
+    if count < 10:
         return random.choice([
-            "🌱 <i>새싹처럼 조금씩 자라는 중!</i>",
-            "☕ <i>여유로운 대화가 오가는 중이에요</i>",
+            "🌱 <i>슬슬 시동 거는 중!</i>",
+            "☕ <i>여유롭게 대화 중이시네요</i>",
         ])
-    if count < 200:
+    if count < 30:
         return random.choice([
-            "💬 <i>오늘 수다 꽤 떠는데요?</i>",
-            "✨ <i>분위기 좋아요, 계속 가보자고!</i>",
+            "💬 <i>오늘 말 좀 하시는데요?</i>",
+            "✨ <i>분위기 메이커 등장!</i>",
         ])
-    if count < 500:
+    if count < 100:
         return random.choice([
-            "🔥 <i>채팅방이 뜨겁게 달아오르는 중!</i>",
-            "🚀 <i>대화 엔진 풀가동!</i>",
+            "🔥 <i>손가락이 불타고 있어요!</i>",
+            "🚀 <i>수다 엔진 풀가동!</i>",
         ])
-    if count < 1000:
+    if count < 300:
         return random.choice([
-            "🌋 <i>이 정도면 폭발 직전이에요!</i>",
-            "🎉 <i>오늘 무슨 일 있어요?! 엄청나요</i>",
+            "🌋 <i>오늘 이 방의 주인공은 당신!</i>",
+            "🎤 <i>마이크 독점 중이시네요 ㅋㅋ</i>",
         ])
     return random.choice([
-        "👑 <i>전설의 수다방 등극…!</i>",
-        "🏆 <i>키보드가 버티고 있나요? 대기록이에요!</i>",
+        "👑 <i>전설의 수다왕 등극…!</i>",
+        "🏆 <i>키보드 괜찮으세요? 대기록이에요!</i>",
     ])
 
 
@@ -121,18 +121,30 @@ def time_left_text() -> str:
     return f"{hours}시간 {minutes}분" if hours else f"{minutes}분"
 
 
-def build_message(chat_title: str | None, count: int) -> str:
+def build_message(chat_title: str | None, entry: dict, user) -> str:
+    """/채팅: 요청한 사람의 오늘 채팅 개수 + 순위."""
     n = now()
     date_text = f"{n.year}년 {n.month}월 {n.day}일 ({WEEKDAYS[n.weekday()]})"
-    title = f"🏠 <b>{escape(chat_title)}</b>\n" if chat_title else ""
+    title = f"🏠 <i>{escape(chat_title)}</i>\n" if chat_title else ""
+
+    users = entry["users"]
+    mine = users.get(str(user.id), {}).get("count", 0)
+    if mine:
+        rank = 1 + sum(1 for u in users.values() if u["count"] > mine)
+        icon = MEDALS.get(rank, "🏅")
+        rank_line = f"{icon} 오늘 순위 <b>{rank}</b>등 <i>/ {len(users)}명</i>"
+    else:
+        rank_line = "🏅 오늘 순위 <i>아직 없음</i>"
+
     return (
-        f"📊 <b>오늘의 채팅 현황</b>\n"
+        f"📊 <b>{escape(user.full_name)}</b>님의 오늘 채팅\n"
         f"{title}"
         f"\n"
         f"<blockquote>📅 <i>{date_text}</i>\n"
-        f"💬 오늘 채팅 <b>{count:,}</b>개</blockquote>\n"
+        f"💬 내 채팅 <b>{mine:,}</b>개\n"
+        f"{rank_line}</blockquote>\n"
         f"\n"
-        f"{mood(count)}\n"
+        f"{mood(mine)}\n"
         f"\n"
         f"⏰ <i>자정 초기화까지</i> <b>{time_left_text()}</b>"
     )
@@ -212,7 +224,8 @@ async def show_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat = update.effective_chat
     entry = today_entry(chat.id)
     await msg.reply_text(
-        build_message(chat_title_of(chat), entry["count"]), parse_mode=ParseMode.HTML
+        build_message(chat_title_of(chat), entry, update.effective_user),
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -252,7 +265,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<blockquote>💬 이 방의 <b>오늘 채팅 개수</b>를 세고 있어요\n"
         "🌙 매일 <i>자정</i>에 0으로 초기화돼요</blockquote>\n"
         "\n"
-        "👉 <b>/채팅</b> 오늘 채팅 개수 보기\n"
+        "👉 <b>/채팅</b> 내 오늘 채팅 개수 보기\n"
         "🏆 <b>/랭킹</b> 오늘 채팅 순위 보기",
         parse_mode=ParseMode.HTML,
     )
