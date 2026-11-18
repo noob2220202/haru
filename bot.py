@@ -4,6 +4,7 @@
 - 매일 자정(기본: 한국 시간)에 0으로 초기화됩니다.
 - /채팅 (또는 /chat) 으로 내 오늘 채팅 개수와 순위를 확인합니다.
 - /랭킹 (또는 /rank) 으로 오늘의 채팅 순위를 확인합니다. (페이지당 10명)
+- 들낙 방지: 스스로 방을 나간 사람은 자동으로 영구 차단합니다. (봇이 관리자여야 함)
 """
 
 import json
@@ -15,12 +16,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -258,6 +260,57 @@ async def ranking_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             raise
 
 
+def left_voluntarily(update: Update) -> bool:
+    """방에 있던 사람이 '스스로' 나갔는지 판별 (관리자가 내보낸 경우는 제외)."""
+    cm = update.chat_member
+    old, new = cm.old_chat_member, cm.new_chat_member
+
+    def is_in(m):
+        return m.status in (
+            ChatMember.OWNER, ChatMember.ADMINISTRATOR, ChatMember.MEMBER
+        ) or (m.status == ChatMember.RESTRICTED and m.is_member)
+
+    return (
+        is_in(old)
+        and not is_in(new)
+        and new.status != ChatMember.BANNED
+        and cm.from_user.id == new.user.id  # 본인이 직접 한 행동
+    )
+
+
+async def ban_leaver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not left_voluntarily(update):
+        return
+    chat = update.effective_chat
+    user = update.chat_member.new_chat_member.user
+    if user.id == context.bot.id:
+        return
+
+    name = escape(user.full_name)
+    try:
+        await context.bot.ban_chat_member(chat.id, user.id)  # until_date 없음 = 영구
+    except (BadRequest, Forbidden) as e:
+        log.warning("밴 실패 chat=%s user=%s: %s", chat.id, user.id, e)
+        await context.bot.send_message(
+            chat.id,
+            f"⚠️ <b>{name}</b>님이 나갔지만 차단하지 못했어요\n"
+            f"<blockquote><i>봇에게 <b>관리자 권한</b>과 "
+            f"<b>사용자 차단</b> 권한을 주세요!</i></blockquote>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    log.info("🚫 들낙 밴 chat=%s user=%s (%s)", chat.id, user.id, user.full_name)
+    await context.bot.send_message(
+        chat.id,
+        f"🚪 <b>{name}</b>님이 방을 나갔어요\n"
+        f"\n"
+        f"<blockquote>🚫 <b>영구 차단</b> 처리되었어요\n"
+        f"🔁 <i>들낙 방지 — 한 번 나가면 다시 못 들어와요</i></blockquote>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "👋 <b>안녕하세요! 하루 채팅 카운터예요</b>\n"
@@ -266,7 +319,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🌙 매일 <i>자정</i>에 0으로 초기화돼요</blockquote>\n"
         "\n"
         "👉 <b>/채팅</b> 내 오늘 채팅 개수 보기\n"
-        "🏆 <b>/랭킹</b> 오늘 채팅 순위 보기",
+        "🏆 <b>/랭킹</b> 오늘 채팅 순위 보기\n"
+        "🚫 <i>들낙 방지: 스스로 나가면 자동 영구 차단</i>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -290,6 +344,7 @@ def main() -> None:
     app.add_handler(MessageHandler(chat_cmd, show_count))
     app.add_handler(MessageHandler(rank_cmd, show_ranking))
     app.add_handler(CallbackQueryHandler(ranking_page, pattern=r"^rank:\d+$"))
+    app.add_handler(ChatMemberHandler(ban_leaver, ChatMemberHandler.CHAT_MEMBER))
 
     # 명령어를 제외한 모든 새 메시지(텍스트·사진·스티커·영상 등)를 카운트
     app.add_handler(
