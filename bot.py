@@ -4,7 +4,7 @@
 - 매일 자정(기본: 한국 시간)에 0으로 초기화됩니다.
 - /채팅 (또는 /chat) 으로 내 오늘 채팅 개수와 순위를 확인합니다.
 - /랭킹 (또는 /rank) 으로 오늘의 채팅 순위를 확인합니다. (페이지당 10명)
-- 들낙 방지: 스스로 방을 나간 사람은 자동으로 영구 차단합니다. (봇이 관리자여야 함)
+- 들낙 방지: 스스로 방을 나간 사람은 조용히 영구 차단하고 퇴장 메시지를 지웁니다. (봇이 관리자여야 함)
 """
 
 import json
@@ -286,29 +286,23 @@ async def ban_leaver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if user.id == context.bot.id:
         return
 
-    name = escape(user.full_name)
     try:
         await context.bot.ban_chat_member(chat.id, user.id)  # until_date 없음 = 영구
+        log.info("🚫 들낙 밴 chat=%s user=%s (%s)", chat.id, user.id, user.full_name)
     except (BadRequest, Forbidden) as e:
-        log.warning("밴 실패 chat=%s user=%s: %s", chat.id, user.id, e)
-        await context.bot.send_message(
-            chat.id,
-            f"⚠️ <b>{name}</b>님이 나갔지만 차단하지 못했어요\n"
-            f"<blockquote><i>봇에게 <b>관리자 권한</b>과 "
-            f"<b>사용자 차단</b> 권한을 주세요!</i></blockquote>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
+        log.warning("밴 실패 (차단 권한 확인) chat=%s user=%s: %s", chat.id, user.id, e)
 
-    log.info("🚫 들낙 밴 chat=%s user=%s (%s)", chat.id, user.id, user.full_name)
-    await context.bot.send_message(
-        chat.id,
-        f"🚪 <b>{name}</b>님이 방을 나갔어요\n"
-        f"\n"
-        f"<blockquote>🚫 <b>영구 차단</b> 처리되었어요\n"
-        f"🔁 <i>들낙 방지 — 한 번 나가면 다시 못 들어와요</i></blockquote>",
-        parse_mode=ParseMode.HTML,
-    )
+
+async def delete_leave_notice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """'OOO님이 나갔습니다' 텔레그램 자동 메시지를 지움 (스스로 나간 경우만)."""
+    msg = update.message
+    left = msg.left_chat_member
+    if msg.from_user is None or msg.from_user.id != left.id:
+        return  # 관리자가 내보낸 경우는 그대로 둠
+    try:
+        await msg.delete()
+    except (BadRequest, Forbidden) as e:
+        log.warning("퇴장 메시지 삭제 실패 (삭제 권한 확인) chat=%s: %s", msg.chat_id, e)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -345,6 +339,9 @@ def main() -> None:
     app.add_handler(MessageHandler(rank_cmd, show_ranking))
     app.add_handler(CallbackQueryHandler(ranking_page, pattern=r"^rank:\d+$"))
     app.add_handler(ChatMemberHandler(ban_leaver, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(
+        MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, delete_leave_notice)
+    )
 
     # 명령어를 제외한 모든 새 메시지(텍스트·사진·스티커·영상 등)를 카운트
     app.add_handler(
