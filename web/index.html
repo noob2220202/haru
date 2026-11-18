@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>채팅 통계</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <!-- 처음 로딩 / 오류 -->
+  <div id="state" class="state">
+    <div class="spinner"></div>
+    <p>통계를 불러오는 중…</p>
+  </div>
+
+  <!-- 방 고르기 (봇 프로필에서 열었을 때) -->
+  <main id="view-chats" class="view hidden">
+    <header class="hero">
+      <div class="hero-emoji">📊</div>
+      <h1>채팅 통계</h1>
+      <p class="muted">통계를 볼 방을 골라주세요</p>
+    </header>
+    <section class="card list" id="chat-list"></section>
+  </main>
+
+  <!-- 공통 기간 선택 바 -->
+  <nav id="period-bar" class="period-bar hidden">
+    <div class="chips" id="chips">
+      <button data-p="today">오늘</button>
+      <button data-p="yesterday">어제</button>
+      <button data-p="7d">7일</button>
+      <button data-p="30d">30일</button>
+      <button data-p="all">전체</button>
+      <button data-p="custom" class="chip-cal">📅 달력</button>
+    </div>
+    <div class="range-label" id="range-label"></div>
+  </nav>
+
+  <!-- 방 전체 통계 -->
+  <main id="view-main" class="view hidden">
+    <header class="title-row">
+      <div class="avatar avatar-lg" id="chat-avatar"></div>
+      <div>
+        <h1 id="chat-title"></h1>
+        <p class="muted">💬 채팅 통계</p>
+      </div>
+    </header>
+
+    <section class="grid" id="summary"></section>
+
+    <section class="card" id="card-daily">
+      <div class="card-head"><h2>📊 일별 메시지</h2><div class="legend"><span class="dot dot-accent"></span>메시지<span class="dot dot-hint"></span>참여 인원</div></div>
+      <div class="chart"><canvas id="chart-daily"></canvas></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>🕐 시간대별 활동</h2><span class="muted small" id="peak-hour"></span></div>
+      <div class="chart chart-sm"><canvas id="chart-hourly"></canvas></div>
+    </section>
+
+    <section class="card" id="card-heat">
+      <div class="card-head"><h2>🗓️ 요일 × 시간</h2><span class="muted small" id="heat-info">칸을 눌러보세요</span></div>
+      <div class="heat" id="heatmap"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>🏆 채팅 순위</h2><span class="muted small" id="rank-count"></span></div>
+      <button class="me-pill hidden" id="me-pill"></button>
+      <div class="list" id="ranking"></div>
+      <div class="pager" id="pager"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>🧩 메시지 종류</h2></div>
+      <div class="kinds">
+        <div class="donut"><canvas id="chart-kinds"></canvas></div>
+        <div class="kind-list" id="kinds"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>🚪 멤버 변동</h2></div>
+      <div class="events" id="events"></div>
+      <p class="muted small note">봇이 관리자가 된 뒤부터 기록돼요</p>
+    </section>
+
+    <footer class="foot muted small" id="foot"></footer>
+  </main>
+
+  <!-- 개인 통계 -->
+  <main id="view-user" class="view hidden">
+    <button class="back" id="back">‹ 전체 통계</button>
+    <header class="profile">
+      <div class="avatar avatar-xl" id="u-avatar"></div>
+      <h1 id="u-name"></h1>
+      <p class="muted" id="u-username"></p>
+      <div class="badge" id="u-badge"></div>
+    </header>
+    <section class="grid" id="u-summary"></section>
+    <section class="card" id="u-card-daily">
+      <div class="card-head"><h2>📊 일별 메시지</h2></div>
+      <div class="chart"><canvas id="u-chart-daily"></canvas></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>🕐 시간대별 활동</h2><span class="muted small" id="u-peak-hour"></span></div>
+      <div class="chart chart-sm"><canvas id="u-chart-hourly"></canvas></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>🧩 메시지 종류</h2></div>
+      <div class="kinds">
+        <div class="donut"><canvas id="u-chart-kinds"></canvas></div>
+        <div class="kind-list" id="u-kinds"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 달력 (기간 선택) -->
+  <div class="sheet hidden" id="sheet">
+    <div class="sheet-backdrop" id="sheet-backdrop"></div>
+    <div class="sheet-panel">
+      <div class="grip"></div>
+      <div class="cal-quick">
+        <button data-q="this-month">이번 달</button>
+        <button data-q="last-month">지난 달</button>
+        <button data-q="this-week">이번 주</button>
+        <button data-q="last-week">지난 주</button>
+      </div>
+      <div class="cal-head">
+        <button class="cal-nav" id="cal-prev" aria-label="이전 달">‹</button>
+        <b id="cal-title"></b>
+        <button class="cal-nav" id="cal-next" aria-label="다음 달">›</button>
+      </div>
+      <div class="cal-week"><span class="sun">일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span class="sat">토</span></div>
+      <div class="cal-grid" id="cal-grid"></div>
+      <div class="cal-sel">
+        <div class="cal-box" id="cal-box-s"><small>시작</small><b id="cal-s">선택</b></div>
+        <span class="arrow">→</span>
+        <div class="cal-box" id="cal-box-e"><small>끝</small><b id="cal-e">선택</b></div>
+      </div>
+      <button class="btn-primary" id="cal-apply" disabled>시작일을 눌러주세요</button>
+    </div>
+  </div>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>

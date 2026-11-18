@@ -3,3 +3,7 @@ counts.tmp
 __pycache__/
 .venv/
 .env
+haru.db
+haru.db-wal
+haru.db-shm
+counts.json.migrated
