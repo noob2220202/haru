@@ -25,7 +25,7 @@ python bot.py
 | `BOT_TIMEZONE` | `Asia/Seoul` | 자정·날짜 기준 시간대 |
 | `DB_FILE` | `haru.db` | 통계 저장 파일 (SQLite) |
 | `WEB_HOST` | `127.0.0.1` | 미니앱 서버 주소 |
-| `WEB_PORT` | `8080` | 미니앱 서버 포트 (`0` 이면 끔) |
+| `WEB_PORT` | `8765` | 미니앱 서버 포트 (`0` 이면 끔) |
 | `APP_SHORT_NAME` | (없음) | BotFather `/newapp` 으로 만든 경우 그 short name |
 
 > 예전 버전의 `counts.json` 이 있으면 처음 실행할 때 오늘 기록을 DB로 자동으로 옮기고 `counts.json.migrated` 로 이름을 바꿔요.
@@ -48,13 +48,13 @@ python bot.py
 - **그 방의 멤버만** 볼 수 있어요 (텔레그램 서명 확인 + 멤버 확인)
 
 ### 설정 방법
-미니앱은 **HTTPS 주소**가 꼭 필요해요. 봇이 `127.0.0.1:8080` 에 띄운 서버를 HTTPS로 연결해주세요.
+미니앱은 **HTTPS 주소**가 꼭 필요해요. 봇이 `127.0.0.1:8765` 에 띄운 서버를 HTTPS로 연결해주세요.
 
 **A. 도메인이 있으면 (추천) — Caddy가 인증서까지 자동으로**
 ```bash
 sudo apt install -y caddy
 echo 'stats.내도메인.com {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:8765
 }' | sudo tee /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
@@ -62,7 +62,7 @@ sudo systemctl reload caddy
 
 **B. 도메인이 없으면 — Cloudflare 임시 터널 (테스트용)**
 ```bash
-cloudflared tunnel --url http://localhost:8080
+cloudflared tunnel --url http://localhost:8765
 ```
 출력되는 `https://xxxx.trycloudflare.com` 주소를 쓰면 돼요. 단, 터널을 다시 켤 때마다 주소가 바뀌어서 BotFather에서도 다시 바꿔줘야 해요.
 

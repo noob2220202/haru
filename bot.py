@@ -44,7 +44,7 @@ TZ = ZoneInfo(os.environ.get("BOT_TIMEZONE", "Asia/Seoul"))
 DB_FILE = Path(os.environ.get("DB_FILE", "haru.db"))
 OLD_JSON = Path(os.environ.get("DATA_FILE", "counts.json"))  # 예전 버전 저장 파일
 WEB_HOST = os.environ.get("WEB_HOST", "127.0.0.1")
-WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))  # 0 이면 미니앱 서버 끔
+WEB_PORT = int(os.environ.get("WEB_PORT", "8765"))  # 0 이면 미니앱 서버 끔
 APP_SHORT_NAME = os.environ.get("APP_SHORT_NAME", "")  # /newapp 으로 만든 경우만
 
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
@@ -397,7 +397,12 @@ async def post_init(app: Application) -> None:
             return is_in(await app.bot.get_chat_member(chat_id, user_id))
 
         server = StatsServer(STORE, TOKEN, TZ, member_check)
-        app.bot_data["web_runner"] = await server.start(WEB_HOST, WEB_PORT)
+        try:
+            app.bot_data["web_runner"] = await server.start(WEB_HOST, WEB_PORT)
+        except OSError as e:
+            # 포트가 이미 쓰이는 중이면 미니앱만 끄고 봇은 계속 동작
+            log.error("❌ 미니앱 서버를 %s 포트에 띄우지 못했어요 (다른 프로그램이 사용 중?): %s "
+                      "→ WEB_PORT 를 다른 번호로 바꿔주세요", WEB_PORT, e)
 
 
 async def post_shutdown(app: Application) -> None:
