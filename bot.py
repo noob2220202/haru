@@ -294,7 +294,7 @@ async def ranking_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # ─────────────────────────── 전체 태그 ───────────────────────────
 
 TAG_BATCH = 5        # 한 메시지에 태그할 인원 (텔레그램은 한 메시지에서 앞쪽 몇 명에게만 알림을 보냄)
-TAG_DELAY = 3.0      # 메시지 사이 간격(초) — 그룹 도배 제한(분당 약 20개) 피하기
+TAG_DELAY = 0        # 메시지 사이 간격(초). 0 = 바로바로 (텔레그램이 막으면 그만큼만 기다림)
 TAGGING: dict[int, asyncio.Task] = {}
 ANON_ADMIN_BOT = 1087968824  # 익명 관리자로 보낼 때의 발신자
 
@@ -366,7 +366,7 @@ async def send_tags(bot, chat_id: int, batches: list[list[dict]], reply_to: int)
                     break
                 except RetryAfter as e:  # 텔레그램이 잠깐 쉬라고 하면 기다렸다 재시도
                     await asyncio.sleep(e.retry_after + 1)
-            if i < total:
+            if TAG_DELAY and i < total:
                 await asyncio.sleep(TAG_DELAY)
         await bot.send_message(chat_id, "✅ <b>전체 태그 완료!</b>", parse_mode=ParseMode.HTML)
     except asyncio.CancelledError:
