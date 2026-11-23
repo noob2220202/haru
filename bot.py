@@ -5,9 +5,11 @@
 - /채팅 (또는 /chat) 으로 내 오늘 채팅 개수와 순위를 확인합니다.
 - /랭킹 (또는 /rank) 으로 오늘의 채팅 순위를 확인합니다. (페이지당 10명)
 - /통계 (또는 /stats) 로 기간별 통계 미니앱을 엽니다.
+- /전체태그 (또는 /all) 로 방 인원 전체를 태그합니다. (방 관리자만)
 - 들낙 방지: 스스로 방을 나간 사람은 조용히 영구 차단하고 퇴장 메시지를 지웁니다. (봇이 관리자여야 함)
 """
 
+import asyncio
 import math
 import logging
 import os
@@ -25,7 +27,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden
+from telegram.error import BadRequest, Forbidden, RetryAfter
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -289,6 +291,109 @@ async def ranking_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             raise
 
 
+# ─────────────────────────── 전체 태그 ───────────────────────────
+
+TAG_BATCH = 5        # 한 메시지에 태그할 인원 (텔레그램은 한 메시지에서 앞쪽 몇 명에게만 알림을 보냄)
+TAG_DELAY = 3.0      # 메시지 사이 간격(초) — 그룹 도배 제한(분당 약 20개) 피하기
+TAGGING: dict[int, asyncio.Task] = {}
+ANON_ADMIN_BOT = 1087968824  # 익명 관리자로 보낼 때의 발신자
+
+
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    msg, chat = update.effective_message, update.effective_chat
+    # '익명 관리자'로 보낸 메시지는 방 자신이 발신자
+    if msg.sender_chat and msg.sender_chat.id == chat.id:
+        return True
+    user = update.effective_user
+    if user is None or user.id == ANON_ADMIN_BOT:
+        return False
+    member = await context.bot.get_chat_member(chat.id, user.id)
+    return member.status in (ChatMember.OWNER, ChatMember.ADMINISTRATOR)
+
+
+def mention(uid: int, name: str) -> str:
+    return f'<a href="tg://user?id={uid}">{escape(name or "?")}</a>'
+
+
+async def tag_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg, chat = update.effective_message, update.effective_chat
+    if chat.type == "private":
+        await msg.reply_text("👥 <i>그룹에서만 쓸 수 있어요</i>", parse_mode=ParseMode.HTML)
+        return
+    if not await is_admin(update, context):
+        await msg.reply_text("🔒 <b>방 관리자만</b> 전체태그를 쓸 수 있어요", parse_mode=ParseMode.HTML)
+        return
+    if chat.id in TAGGING and not TAGGING[chat.id].done():
+        await msg.reply_text(
+            "⏳ <i>이미 태그하는 중이에요</i>\n멈추려면 <b>/태그중지</b>", parse_mode=ParseMode.HTML
+        )
+        return
+
+    members = [m for m in STORE.members(chat.id) if m["id"] != ANON_ADMIN_BOT]
+    if not members:
+        await msg.reply_text("🦗 <i>아직 태그할 인원을 모르겠어요</i>", parse_mode=ParseMode.HTML)
+        return
+
+    # '/전체태그 공지 확인해주세요' 처럼 뒤에 쓴 말을 같이 보여줌
+    parts = (msg.text or "").split(maxsplit=1)
+    note = parts[1].strip() if len(parts) > 1 else ""
+    caller = update.effective_user
+    by = "관리자" if caller is None or caller.id == ANON_ADMIN_BOT else escape(caller.full_name)
+    batches = [members[i:i + TAG_BATCH] for i in range(0, len(members), TAG_BATCH)]
+
+    head = f"📢 <b>전체 호출</b> <i>· {by}</i>\n"
+    if note:
+        head += f"\n<blockquote>{escape(note)}</blockquote>\n"
+    head += f"\n👥 <b>{len(members)}</b>명 태그할게요 <i>(메시지 {len(batches)}개)</i>"
+    await msg.reply_text(head, parse_mode=ParseMode.HTML)
+
+    TAGGING[chat.id] = asyncio.create_task(
+        send_tags(context.bot, chat.id, batches, msg.message_id)
+    )
+
+
+async def send_tags(bot, chat_id: int, batches: list[list[dict]], reply_to: int) -> None:
+    total = len(batches)
+    try:
+        for i, batch in enumerate(batches, 1):
+            text = f"🔔 <i>{i}/{total}</i>  " + "  ".join(mention(m["id"], m["name"]) for m in batch)
+            while True:
+                try:
+                    await bot.send_message(
+                        chat_id, text, parse_mode=ParseMode.HTML,
+                        reply_to_message_id=reply_to, allow_sending_without_reply=True,
+                    )
+                    break
+                except RetryAfter as e:  # 텔레그램이 잠깐 쉬라고 하면 기다렸다 재시도
+                    await asyncio.sleep(e.retry_after + 1)
+            if i < total:
+                await asyncio.sleep(TAG_DELAY)
+        await bot.send_message(chat_id, "✅ <b>전체 태그 완료!</b>", parse_mode=ParseMode.HTML)
+    except asyncio.CancelledError:
+        await bot.send_message(chat_id, "🛑 <b>전체 태그를 멈췄어요</b>", parse_mode=ParseMode.HTML)
+        raise
+    except (BadRequest, Forbidden) as e:
+        log.warning("전체태그 실패 chat=%s: %s", chat_id, e)
+    finally:
+        TAGGING.pop(chat_id, None)
+
+
+async def stop_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not await is_admin(update, context):
+        await update.effective_message.reply_text(
+            "🔒 <b>방 관리자만</b> 멈출 수 있어요", parse_mode=ParseMode.HTML
+        )
+        return
+    task = TAGGING.get(chat.id)
+    if task and not task.done():
+        task.cancel()
+    else:
+        await update.effective_message.reply_text(
+            "💤 <i>지금 태그하는 중이 아니에요</i>", parse_mode=ParseMode.HTML
+        )
+
+
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     title = f"🏠 <i>{escape(chat.title)}</i>\n" if chat.title else ""
@@ -379,6 +484,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "👉 <b>/채팅</b> 내 오늘 채팅 개수 보기\n"
         "🏆 <b>/랭킹</b> 오늘 채팅 순위 보기\n"
         "📈 <b>/통계</b> 기간별 통계 미니앱\n"
+        "📢 <b>/전체태그</b> 방 인원 전체 호출 <i>(관리자)</i>\n"
         "🚫 <i>들낙 방지: 스스로 나가면 자동 영구 차단</i>",
         parse_mode=ParseMode.HTML,
     )
@@ -428,7 +534,9 @@ def main() -> None:
     chat_cmd = filters.Regex(r"^/채팅(@\w+)?(\s|$)")
     rank_cmd = filters.Regex(r"^/랭킹(@\w+)?(\s|$)")
     stats_cmd = filters.Regex(r"^/통계(@\w+)?(\s|$)")
-    korean_cmd = chat_cmd | rank_cmd | stats_cmd
+    tag_cmd = filters.Regex(r"^/전체태그(@\w+)?(\s|$)")
+    stop_cmd = filters.Regex(r"^/태그중지(@\w+)?(\s|$)")
+    korean_cmd = chat_cmd | rank_cmd | stats_cmd | tag_cmd | stop_cmd
 
     app.add_handler(CommandHandler(["chat", "count"], show_count))
     app.add_handler(CommandHandler(["start", "help"], start))
@@ -437,6 +545,10 @@ def main() -> None:
     app.add_handler(MessageHandler(rank_cmd, show_ranking))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(MessageHandler(stats_cmd, show_stats))
+    app.add_handler(CommandHandler("all", tag_all))
+    app.add_handler(MessageHandler(tag_cmd, tag_all))
+    app.add_handler(CommandHandler("stopall", stop_tag))
+    app.add_handler(MessageHandler(stop_cmd, stop_tag))
     app.add_handler(CallbackQueryHandler(ranking_page, pattern=r"^rank:\d+$"))
     app.add_handler(ChatMemberHandler(on_member_update, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(

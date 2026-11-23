@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS events (
     kind    TEXT    NOT NULL           -- join | leave | kick
 );
 CREATE INDEX IF NOT EXISTS events_chat ON events (chat_id, day);
+
+-- 봇이 알고 있는 방 멤버 (채팅하거나 입장한 사람). 나가거나 강퇴되면 active=0
+CREATE TABLE IF NOT EXISTS members (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    active  INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (chat_id, user_id)
+) WITHOUT ROWID;
 """
 
 
@@ -58,7 +66,26 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        self._backfill_members()
         self.db.commit()
+
+    def _backfill_members(self) -> None:
+        """멤버 표가 비어 있으면 지금까지의 채팅/입퇴장 기록으로 채움 (업데이트 직후 1회)."""
+        if self.db.execute("SELECT 1 FROM members LIMIT 1").fetchone():
+            return
+        self.db.execute(
+            "INSERT OR IGNORE INTO members (chat_id, user_id, active) "
+            "SELECT DISTINCT chat_id, user_id, 1 FROM stats"
+        )
+        for r in self.db.execute("SELECT chat_id, user_id, kind FROM events ORDER BY id").fetchall():
+            self._set_member(r["chat_id"], r["user_id"], r["kind"] == "join")
+
+    def _set_member(self, chat_id: int, user_id: int, active: bool) -> None:
+        self.db.execute(
+            "INSERT INTO members (chat_id, user_id, active) VALUES (?, ?, ?) "
+            "ON CONFLICT DO UPDATE SET active=excluded.active",
+            (chat_id, user_id, int(active)),
+        )
 
     # ─────────────── 쓰기 ───────────────
 
@@ -84,6 +111,7 @@ class Store:
             "ON CONFLICT DO UPDATE SET count = count + excluded.count",
             (chat_id, when.date().isoformat(), when.hour, user_id, kind, n),
         )
+        self._set_member(chat_id, user_id, True)
         self.db.commit()
 
     def add_event(self, chat_id: int, user_id: int, name: str,
@@ -93,6 +121,23 @@ class Store:
             "INSERT INTO events (chat_id, day, ts, user_id, kind) VALUES (?, ?, ?, ?, ?)",
             (chat_id, when.date().isoformat(), when.isoformat(), user_id, kind),
         )
+        self._set_member(chat_id, user_id, kind == "join")
+        self.db.commit()
+
+    def members(self, chat_id: int) -> list[dict]:
+        """태그용: 방에 있는 것으로 알고 있는 사람 목록 (최근에 많이 채팅한 순)."""
+        rows = self.db.execute(
+            "SELECT m.user_id, u.name, "
+            "  (SELECT COALESCE(SUM(count),0) FROM stats s "
+            "   WHERE s.chat_id=m.chat_id AND s.user_id=m.user_id) cnt "
+            "FROM members m JOIN users u ON u.user_id = m.user_id "
+            "WHERE m.chat_id=? AND m.active=1 ORDER BY cnt DESC, m.user_id",
+            (chat_id,),
+        ).fetchall()
+        return [{"id": r["user_id"], "name": r["name"]} for r in rows]
+
+    def set_member_inactive(self, chat_id: int, user_id: int) -> None:
+        self._set_member(chat_id, user_id, False)
         self.db.commit()
 
     def migrate_json(self, path: Path, now: datetime) -> int:
