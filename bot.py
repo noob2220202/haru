@@ -6,6 +6,7 @@
 - /랭킹 (또는 /rank) 으로 오늘의 채팅 순위를 확인합니다. (페이지당 10명)
 - /통계 (또는 /stats) 로 기간별 통계 미니앱을 엽니다.
 - /전체태그 (또는 /all) 로 방 인원 전체를 태그합니다. (방 관리자만)
+- /방탈출 (또는 /escape) 로 방탈출 사이트 버튼을 띄웁니다.
 - 들낙 방지: 스스로 방을 나간 사람은 조용히 영구 차단하고 퇴장 메시지를 지웁니다. (봇이 관리자여야 함)
 """
 
@@ -48,6 +49,7 @@ OLD_JSON = Path(os.environ.get("DATA_FILE", "counts.json"))  # 예전 버전 저
 WEB_HOST = os.environ.get("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8765"))  # 0 이면 미니앱 서버 끔
 APP_SHORT_NAME = os.environ.get("APP_SHORT_NAME", "")  # /newapp 으로 만든 경우만
+ESCAPE_URL = os.environ.get("ESCAPE_URL", "https://haru.pengueverything.cloud/")
 
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 PAGE_SIZE = 10
@@ -394,6 +396,18 @@ async def stop_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+async def show_escape(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text(
+        "🔐 <b>방탈출</b>\n"
+        "\n"
+        "<blockquote>🗝️ <i>단서를 찾고, 문을 열고, 탈출하세요!</i></blockquote>\n"
+        "\n"
+        "👇 <i>아래 버튼을 눌러 입장</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚪 방탈출 하러 가기", url=ESCAPE_URL)]]),
+    )
+
+
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     title = f"🏠 <i>{escape(chat.title)}</i>\n" if chat.title else ""
@@ -485,6 +499,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🏆 <b>/랭킹</b> 오늘 채팅 순위 보기\n"
         "📈 <b>/통계</b> 기간별 통계 미니앱\n"
         "📢 <b>/전체태그</b> 방 인원 전체 호출 <i>(관리자)</i>\n"
+        "🔐 <b>/방탈출</b> 방탈출 하러 가기\n"
         "🚫 <i>들낙 방지: 스스로 나가면 자동 영구 차단</i>",
         parse_mode=ParseMode.HTML,
     )
@@ -536,7 +551,8 @@ def main() -> None:
     stats_cmd = filters.Regex(r"^/통계(@\w+)?(\s|$)")
     tag_cmd = filters.Regex(r"^/전체태그(@\w+)?(\s|$)")
     stop_cmd = filters.Regex(r"^/태그중지(@\w+)?(\s|$)")
-    korean_cmd = chat_cmd | rank_cmd | stats_cmd | tag_cmd | stop_cmd
+    escape_cmd = filters.Regex(r"^/방탈출(@\w+)?(\s|$)")
+    korean_cmd = chat_cmd | rank_cmd | stats_cmd | tag_cmd | stop_cmd | escape_cmd
 
     app.add_handler(CommandHandler(["chat", "count"], show_count))
     app.add_handler(CommandHandler(["start", "help"], start))
@@ -545,6 +561,8 @@ def main() -> None:
     app.add_handler(MessageHandler(rank_cmd, show_ranking))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(MessageHandler(stats_cmd, show_stats))
+    app.add_handler(CommandHandler("escape", show_escape))
+    app.add_handler(MessageHandler(escape_cmd, show_escape))
     app.add_handler(CommandHandler("all", tag_all))
     app.add_handler(MessageHandler(tag_cmd, tag_all))
     app.add_handler(CommandHandler("stopall", stop_tag))
